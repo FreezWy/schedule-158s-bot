@@ -88,45 +88,83 @@ def cell_text(value):
     return str(value).strip()
 
 
+
 def extract_group(workbook):
-    # Сначала ищем отдельный лист для 158с.
-    matching_sheets = [
-        ws for ws in workbook.worksheets
-        if re.search(r"(?<!\w)158\s*с(?!\w)", ws.title, re.I)
-    ]
+    import re
 
-    # Если отдельного листа нет, ищем упоминание 158с
-    # в содержимом листов.
-    if not matching_sheets:
-        for ws in workbook.worksheets:
-            for row in ws.iter_rows(values_only=True):
-                if any(
-                    re.search(
-                        r"(?<!\w)158\s*с(?!\w)",
-                        cell_text(v), re.I
-                    )
-                    for v in row
-                ):
-                    matching_sheets.append(ws)
-                    break
+    group_pattern = re.compile(r"^\s*158\s*с\s*$", re.I)
 
-    if not matching_sheets:
-        raise RuntimeError(
-            "Не удалось определить лист или блок группы 158с. "
-            "Нужно проверить структуру Excel."
-        )
+    for ws in workbook.worksheets:
+        group_row = None
 
-    lines = []
-    for ws in matching_sheets:
-        lines.append(f"📚 Лист: {ws.title}")
-        for row in ws.iter_rows(values_only=True):
-            values = [cell_text(v) for v in row]
-            while values and not values[-1]:
-                values.pop()
-            if any(values):
-                lines.append(" | ".join(values))
+        # Ищем строку, с которой начинается блок 158с.
+        for row in range(1, ws.max_row + 1):
+            value = cell_text(ws.cell(row, 1).value)
+            if group_pattern.match(value):
+                group_row = row
+                break
 
-    return "\n".join(lines)
+        if group_row is None:
+            continue
+
+        # Находим конец блока: следующая группа в колонке A.
+        end_row = ws.max_row + 1
+        for row in range(group_row + 1, ws.max_row + 1):
+            value = cell_text(ws.cell(row, 1).value)
+            if value:
+                end_row = row
+                break
+
+        # Начальные и конечные колонки дней.
+        # Последний блок субботы продолжается до конца таблицы.
+        days = [
+            ("Понедельник", 3, 6),
+            ("Вторник", 7, 10),
+            ("Среда", 11, 14),
+            ("Четверг", 15, 18),
+            ("Пятница", 19, 22),
+            ("Суббота", 23, ws.max_column),
+        ]
+
+        lines = []
+        for day, start_col, end_col in days:
+            # Берём дату из заголовка соответствующего дня.
+            header_col = start_col - 1 if day == "Понедельник" else start_col
+            header = cell_text(ws.cell(2, header_col).value)
+            date_match = re.search(r"\d{2}\.\d{2}", header)
+            date = date_match.group(0) if date_match else ""
+
+            lessons = []
+            for row in range(group_row, end_row):
+                time = cell_text(ws.cell(row, 2).value)
+                subjects = []
+
+                for col in range(start_col, end_col + 1):
+                    value = cell_text(ws.cell(row, col).value)
+                    if value and value not in subjects:
+                        subjects.append(value)
+
+                if subjects:
+                    time_label = time or "Время не указано"
+                    for subject in subjects:
+                        lessons.append(f"  {time_label}\n  {subject}")
+
+            if lessons:
+                heading = f"📅 {day}"
+                if date:
+                    heading += f", {date}"
+                lines.append(heading + "\n" + "\n".join(lessons))
+
+        if not lines:
+            raise RuntimeError(
+                "Блок группы 158с найден, но занятия не обнаружены."
+            )
+
+        return "\n\n".join(lines)
+
+    raise RuntimeError(
+        "Группа 158с не найдена ни на одном листе Excel."
+    )
 
 
 def send_telegram(text):
